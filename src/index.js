@@ -15,7 +15,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import process from 'node:process';
 import { AbortController } from 'node:abort_controller';
-import pkg from '../package.json' assert { type: 'json' };
+import pkg from '../package.json' with { type: 'json' };
 
 const EXIT_CODES = {
   SUCCESS: 0,
@@ -53,7 +53,10 @@ async function main() {
     .version(pkg.version)
     .option('--path <path>', 'Caminho para um repositório Git existente')
     .option('--prompt <prompt>', 'Prompt a ser enviado ao Copilot no primeiro fluxo')
-    .option('--base <ref>', 'Referência base para a nova branch', 'HEAD')
+    .option(
+      '--base <ref>',
+      'Referência base para a nova branch (default: branch atual ou HEAD se destacado)'
+    )
     .option('--timeout <minutes>', 'Tempo limite em minutos por execução do Copilot CLI', (value) => Number(value))
     .option('--verbose', 'Ativa logs detalhados', false);
 
@@ -70,9 +73,15 @@ async function main() {
     const repoPath = await resolveRepoPath(options.path);
     logVerbose(verbose, `Usando repositório: ${repoPath}`);
 
+    const baseRef = await resolveBaseRef({
+      repoPath,
+      requestedBase: options.base,
+      verbose
+    });
+
     const { worktreePath, branchName } = await createWorktree({
       repoPath,
-      baseRef: options.base,
+      baseRef,
       verbose
     });
 
@@ -174,6 +183,31 @@ async function ensurePathAbsent(targetPath) {
     if (error.code === 'ENOENT') return;
     throw error;
   }
+}
+
+async function resolveBaseRef({ repoPath, requestedBase, verbose }) {
+  const manualRef = requestedBase?.trim();
+  if (manualRef) {
+    logVerbose(verbose, `Base informada manualmente: ${manualRef}`);
+    return manualRef;
+  }
+
+  const git = simpleGit({ baseDir: repoPath, binary: 'git' });
+  try {
+    const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    if (currentBranch && currentBranch !== 'HEAD') {
+      logVerbose(verbose, `Detectada branch atual: ${currentBranch}`);
+      return currentBranch;
+    }
+    logVerbose(verbose, 'HEAD está destacado; usando HEAD como fallback.');
+  } catch (error) {
+    logVerbose(
+      verbose,
+      `Não foi possível detectar a branch atual automaticamente (${error.message}). Usando HEAD.`
+    );
+  }
+
+  return 'HEAD';
 }
 
 async function createWorktree({ repoPath, baseRef, verbose }) {

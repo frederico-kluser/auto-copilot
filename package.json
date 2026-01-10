@@ -1,6 +1,6 @@
 {
   "name": "auto-copilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI para criar worktrees Git e orquestrar prompts do GitHub Copilot CLI.",
   "type": "module",
   "bin": {
@@ -20,6 +20,14 @@
   ],
   "author": "Frederico Guilherme Kluser de Oliveira",
   "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frederico-kluser/auto-copilot.git"
+  },
+  "homepage": "https://github.com/frederico-kluser/auto-copilot#readme",
+  "bugs": {
+    "url": "https://github.com/frederico-kluser/auto-copilot/issues"
+  },
   "engines": {
     "node": ">=22.0.0"
   },

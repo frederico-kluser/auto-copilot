@@ -29,7 +29,7 @@ auto-copilot [opções]
 | --- | --- |
 | `--path <caminho>` | Repositório Git que servirá como origem. Caso omitido, o CLI usa o repositório atual. |
 | `--prompt "texto"` | Prompt enviado ao Copilot no primeiro fluxo. Se omitido e houver TTY, o CLI pergunta interativamente. |
-| `--base <ref>` | Referência usada como base do novo worktree (default: `HEAD`). |
+| `--base <ref>` | Referência usada como base do novo worktree (default: branch atual; fallback para `HEAD`). |
 | `--timeout <min>` | Tempo limite (em minutos) para cada execução do Copilot CLI. Default: 60 min; caso a flag não seja fornecida e exista TTY, o CLI pergunta ao usuário após coletar o prompt. |
 | `--verbose` | Ativa logs detalhados. |
 
@@ -52,7 +52,7 @@ GH_TOKEN=ghp_xxx auto-copilot \
 ## Fluxo automatizado
 
 1. **Descoberta do repositório** — usa `--path` ou detecta o Git root atual.
-2. **Criação da worktree** — gera diretório `NomeDoProjeto.worktree/<timestamp>` e branch homônima para garantir unicidade, mudando o `cwd` do processo para a nova worktree.
+2. **Criação da worktree** — gera diretório `NomeDoProjeto.worktree/<timestamp>` e branch homônima para garantir unicidade, mudando o `cwd` do processo para a nova worktree e usando, por padrão, a branch atual como base (fallback para `HEAD` ou para o valor de `--base`, se informado).
 3. **Primeiro prompt do Copilot** — envia o prompt informado (ou coletado interativamente) com flags `--allow-all-tools`, `--allow-all-paths` e `--allow-all-urls` para evitar travas interativas. Todo stdout/stderr é retransmitido em tempo real e o processo é encerrado se o Copilot retornar erro ou exceder o timeout.
 4. **Fluxo automático de finalização** — dispara um segundo prompt sem intervenção humana que:
    - analisa o status/diff do repositório;
