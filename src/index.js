@@ -27,7 +27,8 @@ const EXIT_CODES = {
   USER_CANCELLED: 130
 };
 
-const DEFAULT_TIMEOUT = 15 * 60 * 1000; // 15 minutos
+const DEFAULT_TIMEOUT_MINUTES = 15;
+const DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_MINUTES * 60 * 1000;
 
 class OperationalError extends Error {
   constructor(message, code = EXIT_CODES.GENERAL_ERROR, meta = {}) {
@@ -53,7 +54,7 @@ async function main() {
     .option('--path <path>', 'Caminho para um repositório Git existente')
     .option('--prompt <prompt>', 'Prompt a ser enviado ao Copilot no primeiro fluxo')
     .option('--base <ref>', 'Referência base para a nova branch', 'HEAD')
-    .option('--timeout <ms>', 'Tempo limite (ms) por execução do Copilot CLI', (value) => Number(value), DEFAULT_TIMEOUT)
+    .option('--timeout <minutes>', 'Tempo limite em minutos por execução do Copilot CLI', (value) => Number(value))
     .option('--verbose', 'Ativa logs detalhados', false);
 
   program.parse(process.argv);
