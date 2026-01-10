@@ -106,3 +106,302 @@ auto-copilot/
 2. Execute os testes: `npm test`.
 3. Valide o CLI localmente com `npm start -- --prompt "..."` (o `--` extra encaminha flags para o binário).
 4. Antes de publicar, teste o fluxo completo em um repositório de exemplo e confirme que o Copilot CLI está autenticado e confia no diretório alvo.
+
+## Guia completo para debugging e wrapping do GitHub Copilot CLI em Node.js
+
+O GitHub Copilot CLI (`gh copilot`) **foi deprecado em 25 de outubro de 2025** em favor do novo `copilot` CLI standalone. Este guia cobre ambas as ferramentas e fornece padrões práticos para construir wrappers robustos em Node.js usando execa.
+
+### O mecanismo principal de debug: GH_DEBUG
+
+A variável de ambiente `GH_DEBUG` é a ferramenta mais poderosa para debugging do `gh copilot`. Com `GH_DEBUG=api`, você obtém logs completos do tráfego HTTP, incluindo headers, payloads e tempos de resposta da API `api.githubcopilot.com`.
+
+```javascript
+import { execa } from 'execa';
+
+const result = await execa('gh', ['copilot', 'suggest', '-t', 'shell', 'list files'], {
+  env: { ...process.env, GH_DEBUG: 'api' },
+  all: true  // Captura stdout + stderr intercalados
+});
+
+// Debug output vai para stderr
+console.log('Debug logs:', result.stderr);
+```
+
+O valor `GH_DEBUG=1` ativa output verboso básico, enquanto `GH_DEBUG=api` adiciona logging completo do tráfego HTTP — essencial para diagnosticar problemas de autenticação, rate limiting e timeouts. Note que **não existem flags `--debug` ou `--verbose`** no comando `gh copilot` em si.
+
+### Exit codes e detecção de erros
+
+O `gh` CLI segue convenções Unix documentadas: **exit code 0** indica sucesso, **1** erro geral, **2** comando cancelado, e **4** autenticação necessária. Um problema conhecido é que erros HTTP 401 podem retornar código 1 ao invés de 4, complicando a detecção de problemas de auth.
+
+```javascript
+import { execa, ExecaError } from 'execa';
+
+async function runCopilot(query, target = 'shell') {
+  try {
+    return await execa('gh', ['copilot', 'suggest', '-t', target, query], {
+      timeout: 30000,
+      env: { ...process.env, GH_PROMPT_DISABLED: '1' }
+    });
+  } catch (error) {
+    if (!(error instanceof ExecaError)) throw error;
+    
+    // Classificação precisa do erro
+    if (error.timedOut) {
+      throw new CopilotTimeoutError(`Timeout após 30s: ${query}`);
+    }
+    if (error.exitCode === 4 || error.stderr?.includes('No valid OAuth token')) {
+      throw new CopilotAuthError('Autenticação OAuth necessária');
+    }
+    if (error.stderr?.includes('rate limit') || error.stderr?.includes('HTTP 429')) {
+      throw new CopilotRateLimitError('Rate limit atingido');
+    }
+    
+    throw new CopilotError(error.shortMessage, { cause: error });
+  }
+}
+```
+
+### Modos de falha mais comuns
+
+O **erro de autenticação mais frequente** ocorre quando `GH_TOKEN` ou `GITHUB_TOKEN` estão definidos — o `gh copilot` requer OAuth app authentication, não Personal Access Tokens. A solução é limpar essas variáveis e usar `gh auth login --web`.
+
+| Erro | Causa | Solução |
+|------|-------|---------|
+| `No valid OAuth token detected` | PAT ao invés de OAuth | `unset GH_TOKEN && gh auth login --web` |
+| `rate limit exceeded` / HTTP 429 | Muitas requisições | Implementar backoff exponencial |
+| `Client.Timeout exceeded` | Query muito longa | Aumentar timeout ou quebrar query |
+| `fetch failed` | Proxy corporativo | Verificar configurações de proxy |
+| `spawn gh ENOENT` | gh não está no PATH | Instalar gh CLI ou ajustar PATH |
+
+Falhas silenciosas (exit 0 mas sem output útil) podem ocorrer quando stdin não é um TTY ou quando há rate limiting parcial. A detecção requer validação do conteúdo da resposta além do exit code.
+
+### Estrutura recomendada para logging
+
+Para CLIs que wrappam processos externos, **consola** é ideal por seu output formatado com ícones e cores, enquanto o módulo **debug** permite debugging granular via namespaces.
+
+```javascript
+import { createConsola } from 'consola';
+import debug from 'debug';
+
+// Logger para output do usuário
+const logger = createConsola({
+  level: process.argv.includes('-v') ? 4 : 3  // 4=debug, 3=info
+});
+
+// Debug namespaces para desenvolvimento
+const debugCopilot = debug('mycli:copilot');
+const debugExec = debug('mycli:exec');
+
+export async function executeCopilot(query, options = {}) {
+  const startTime = Date.now();
+  debugExec('Iniciando comando: %s', query);
+  
+  try {
+    const result = await runCopilotWithRetry(query, options);
+    const duration = Date.now() - startTime;
+    
+    debugCopilot('Sucesso em %dms: %s', duration, result.stdout.slice(0, 100));
+    logger.success(`Comando executado em ${duration}ms`);
+    
+    return result;
+  } catch (error) {
+    debugCopilot('Falha: %O', error);
+    logger.error(error.message);
+    throw error;
+  }
+}
+```
+
+Ative os logs de debug com `DEBUG=mycli:* node cli.js` — isso não afeta o output do usuário mas fornece visibilidade total durante desenvolvimento e troubleshooting.
+
+### Padrão robusto com retry e circuit breaker
+
+O wrapper completo deve implementar **retry com backoff exponencial** para erros transientes e **circuit breaker** para proteger contra cascatas de falha quando o serviço está instável.
+
+```javascript
+import { execa, ExecaError } from 'execa';
+import pRetry from 'p-retry';
+import CircuitBreaker from 'opossum';
+
+class CopilotCLIWrapper {
+  constructor(options = {}) {
+    this.timeout = options.timeout || 30000;
+    this.maxRetries = options.maxRetries || 3;
+    this.debug = options.debug || false;
+    
+    // Circuit breaker: abre após 3 falhas em 10 requisições
+    this.breaker = new CircuitBreaker(this._execute.bind(this), {
+      timeout: this.timeout,
+      errorThresholdPercentage: 30,
+      resetTimeout: 60000,
+      volumeThreshold: 10
+    });
+    
+    this.breaker.fallback(() => ({
+      failed: true,
+      message: 'Copilot CLI temporariamente indisponível'
+    }));
+  }
+
+  async _execute(query, target) {
+    const env = {
+      ...process.env,
+      GH_PROMPT_DISABLED: '1',
+      ...(this.debug && { GH_DEBUG: 'api' })
+    };
+
+    return execa('gh', ['copilot', 'suggest', '-t', target, query], {
+      timeout: this.timeout,
+      env,
+      all: true
+    });
+  }
+
+  async suggest(query, target = 'shell') {
+    return pRetry(
+      () => this.breaker.fire(query, target),
+      {
+        retries: this.maxRetries,
+        minTimeout: 1000,
+        maxTimeout: 10000,
+        onFailedAttempt: ({ attemptNumber, retriesLeft, error }) => {
+          console.warn(`Tentativa ${attemptNumber} falhou. ${retriesLeft} restantes.`);
+          
+          // Não fazer retry em erros de autenticação
+          if (error.exitCode === 4 || error.stderr?.includes('OAuth')) {
+            throw new pRetry.AbortError('Erro de autenticação - retry abortado');
+          }
+        }
+      }
+    );
+  }
+}
+```
+
+O **circuit breaker** previne que sua aplicação continue bombardeando um serviço que está falhando — após atingir o threshold de erros, ele "abre" e retorna o fallback imediatamente por 60 segundos antes de tentar novamente.
+
+### Detecção de erros silenciosos em tempo real
+
+Mesmo com exit code 0, o output pode indicar problemas. Use streaming para detectar erros durante a execução.
+
+```javascript
+async function suggestWithValidation(query, target = 'shell') {
+  const subprocess = execa('gh', ['copilot', 'suggest', '-t', target, query], {
+    timeout: 30000,
+    env: { ...process.env, GH_PROMPT_DISABLED: '1' }
+  });
+
+  const errorPatterns = [
+    /error:/i,
+    /failed to/i,
+    /could not connect/i,
+    /rate limit/i
+  ];
+
+  const lines = [];
+  const detectedErrors = [];
+
+  for await (const line of subprocess) {
+    lines.push(line);
+    
+    for (const pattern of errorPatterns) {
+      if (pattern.test(line)) {
+        detectedErrors.push({ pattern: pattern.source, line });
+      }
+    }
+  }
+
+  const result = await subprocess;
+  
+  // Validar mesmo em sucesso
+  if (detectedErrors.length > 0) {
+    throw new Error(`Erros detectados no output: ${JSON.stringify(detectedErrors)}`);
+  }
+  
+  if (!result.stdout.trim()) {
+    throw new Error('Resposta vazia do Copilot CLI');
+  }
+
+  return result;
+}
+```
+
+### Graceful shutdown e signal handling
+
+Para aplicações de longa duração, implemente shutdown graceful que termina processos filhos corretamente.
+
+```javascript
+class ManagedCopilotWrapper {
+  constructor() {
+    this.activeProcesses = new Set();
+    this.shuttingDown = false;
+    
+    process.on('SIGTERM', () => this.shutdown('SIGTERM'));
+    process.on('SIGINT', () => this.shutdown('SIGINT'));
+  }
+
+  async shutdown(signal) {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    
+    console.log(`Recebido ${signal}, finalizando processos...`);
+    
+    // Grace period de 5 segundos
+    const forceKill = setTimeout(() => {
+      for (const proc of this.activeProcesses) {
+        proc.kill('SIGKILL');
+      }
+    }, 5000);
+
+    for (const proc of this.activeProcesses) {
+      proc.kill('SIGTERM');
+    }
+
+    await Promise.allSettled(
+      [...this.activeProcesses].map(p => p.catch(() => {}))
+    );
+    
+    clearTimeout(forceKill);
+    process.exit(0);
+  }
+
+  async run(query, target) {
+    if (this.shuttingDown) {
+      throw new Error('Sistema em shutdown');
+    }
+
+    const subprocess = execa('gh', ['copilot', 'suggest', '-t', target, query], {
+      timeout: 30000,
+      cleanup: true,  // Mata processo filho quando parent termina
+      forceKillAfterDelay: 5000  // SIGKILL após 5s se SIGTERM falhar
+    });
+
+    this.activeProcesses.add(subprocess);
+    
+    try {
+      return await subprocess;
+    } finally {
+      this.activeProcesses.delete(subprocess);
+    }
+  }
+}
+```
+
+### Variáveis de ambiente essenciais
+
+| Variável | Propósito | Valor recomendado |
+|----------|-----------|-------------------|
+| `GH_DEBUG` | Ativa logging verboso | `api` para debug completo |
+| `GH_PROMPT_DISABLED` | Desativa prompts interativos | `1` para automação |
+| `GH_TOKEN` | **Não usar** com gh copilot | Deixar vazio (usar OAuth) |
+| `NO_COLOR` | Desativa cores ANSI | `1` para parsing de output |
+| `GH_HOST` | Hostname do GitHub | Para GitHub Enterprise |
+
+Para o novo `copilot` CLI standalone (pós-deprecação), use `--log-level debug` e `COPILOT_GITHUB_TOKEN` para autenticação.
+
+### Conclusão
+
+Construir um wrapper robusto para o GitHub Copilot CLI requer atenção a três aspectos críticos: **debug via `GH_DEBUG=api`** para visibilidade do tráfego HTTP, **tratamento diferenciado de erros** usando as propriedades `timedOut`, `exitCode` e padrões no stderr do execa, e **resiliência via retry com backoff e circuit breaker**.
+
+A migração para o novo `copilot` CLI standalone deve ser considerada dado o deprecation de outubro 2025 — ele oferece flags nativas como `--log-level debug` que simplificam significativamente o troubleshooting. Para projetos novos, implemente o wrapper com suporte a ambas as versões para facilitar a transição.
+
