@@ -27,8 +27,8 @@ const EXIT_CODES = {
   USER_CANCELLED: 130
 };
 
-const DEFAULT_TIMEOUT_MINUTES = 15;
-const DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_MINUTES * 60 * 1000;
+const DEFAULT_TIMEOUT_MINUTES = 60;
+const MINUTE_IN_MS = 60 * 1000;
 
 class OperationalError extends Error {
   constructor(message, code = EXIT_CODES.GENERAL_ERROR, meta = {}) {
@@ -61,7 +61,6 @@ async function main() {
   const options = program.opts();
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   const verbose = Boolean(options.verbose);
-  const timeout = Number.isFinite(options.timeout) && options.timeout > 0 ? options.timeout : DEFAULT_TIMEOUT;
 
   if (interactive) {
     intro('🌳  auto-copilot');
@@ -81,6 +80,9 @@ async function main() {
     note(`Worktree pronta em ${worktreePath}`, 'Ambiente');
 
     const userPrompt = await resolvePrompt(options.prompt, interactive);
+    const timeoutMinutes = await resolveTimeoutMinutes(options.timeout, interactive);
+    const timeout = timeoutMinutes * MINUTE_IN_MS;
+
     const firstPrompt = buildFirstPrompt({
       userPrompt,
       repoName: path.basename(repoPath),
@@ -220,6 +222,38 @@ async function resolvePrompt(providedPrompt, interactive) {
   }
 
   return response.trim();
+}
+
+async function resolveTimeoutMinutes(providedTimeout, interactive) {
+  if (Number.isFinite(providedTimeout) && providedTimeout > 0) {
+    return providedTimeout;
+  }
+
+  if (!interactive) {
+    return DEFAULT_TIMEOUT_MINUTES;
+  }
+
+  const response = await text({
+    message: 'Defina o tempo máximo (em minutos) para cada execução do Copilot CLI:',
+    placeholder: String(DEFAULT_TIMEOUT_MINUTES),
+    initialValue: String(DEFAULT_TIMEOUT_MINUTES)
+  });
+
+  if (isCancel(response)) {
+    throw new OperationalError('Execução cancelada pelo usuário.', EXIT_CODES.USER_CANCELLED);
+  }
+
+  const trimmed = response?.trim();
+  if (!trimmed) {
+    return DEFAULT_TIMEOUT_MINUTES;
+  }
+
+  const minutes = Number(trimmed);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    throw new OperationalError('Informe um número inteiro positivo para o tempo limite.', EXIT_CODES.INVALID_ARGUMENT);
+  }
+
+  return minutes;
 }
 
 function buildFirstPrompt({ userPrompt, repoName, branchName }) {

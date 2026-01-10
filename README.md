@@ -30,7 +30,7 @@ auto-copilot [opções]
 | `--path <caminho>` | Repositório Git que servirá como origem. Caso omitido, o CLI usa o repositório atual. |
 | `--prompt "texto"` | Prompt enviado ao Copilot no primeiro fluxo. Se omitido e houver TTY, o CLI pergunta interativamente. |
 | `--base <ref>` | Referência usada como base do novo worktree (default: `HEAD`). |
-| `--timeout <ms>` | Tempo limite por execução do Copilot CLI (default: 15 minutos). |
+| `--timeout <min>` | Tempo limite (em minutos) para cada execução do Copilot CLI. Default: 60 min; caso a flag não seja fornecida e exista TTY, o CLI pergunta ao usuário após coletar o prompt. |
 | `--verbose` | Ativa logs detalhados. |
 
 ### Exemplo rápido
@@ -40,12 +40,14 @@ GH_TOKEN=ghp_xxx auto-copilot \
   --path ~/projetos/minha-api \
   --prompt "Adicionar endpoint /health e cobrir com testes" \
   --base main \
-  --timeout 600000
+  --timeout 20
 ```
 
 1. O utilitário descobre o repositório raiz e cria `minha-api.worktree/20260110-020657` com branch homônima.
 2. O primeiro fluxo do Copilot executa o prompt informado enquanto transmite stdout/stderr em tempo real.
 3. O segundo fluxo reorganiza o resultado: sugere um branch final (ex.: `feat/add-health-endpoint`), renomeia a branch, adiciona arquivos e gera o commit final antes de exibir `git status -sb` limpo.
+
+> Dica: se você não usar `--timeout`, o CLI pergunta "Quantos minutos?" logo após coletar o prompt e, se você pressionar Enter, assume 60 minutos.
 
 ## Fluxo automatizado
 
