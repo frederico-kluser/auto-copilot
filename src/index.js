@@ -14,7 +14,6 @@ import { execa } from 'execa';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import process from 'node:process';
-import { AbortController } from 'node:abort_controller';
 import pkg from '../package.json' with { type: 'json' };
 
 const EXIT_CODES = {

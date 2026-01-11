@@ -1,6 +1,6 @@
 {
   "name": "auto-copilot",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CLI para criar worktrees Git e orquestrar prompts do GitHub Copilot CLI.",
   "type": "module",
   "bin": {
